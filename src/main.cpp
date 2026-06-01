@@ -92,7 +92,7 @@ signed main(const int argc, char *argv[]){
     }
 
     setup_signals();
-
+    if(!threads) threads = default_thread_count();
     ThreadPool pool(threads);
     log_info("Thread pool: %zu workers", pool.size());
     log_info("Listening on %s:%u ...", bind_addr, g_config.port);
