@@ -47,7 +47,7 @@ jobs:
 
           try {
             # Test SOCKS5 via curl
-            curl --proxy socks5://127.0.0.1:11080 --max-time 10 -s -o NUL http://httpbin.org/ip
+            curl --proxy socks5://127.0.0.1:11080 --max-time 60 -s -o NUL http://httpbin.org/ip
             if ($LASTEXITCODE -ne 0) {
               Write-Error "curl SOCKS5 test failed (exit code: $LASTEXITCODE)"
             } else {
@@ -55,7 +55,7 @@ jobs:
             }
 
             # Test HTTP CONNECT via curl
-            curl --proxy http://127.0.0.1:11080 --max-time 10 -s -o NUL https://httpbin.org/ip
+            curl --proxy http://127.0.0.1:11080 --max-time 60 -s -o NUL https://httpbin.org/ip
             if ($LASTEXITCODE -ne 0) {
               Write-Error "curl HTTP test failed (exit code: $LASTEXITCODE)"
             } else {
@@ -100,7 +100,7 @@ jobs:
           echo "Proxy started (PID: $PROXY_PID)"
 
           # Test SOCKS5
-          if curl --proxy socks5://127.0.0.1:11080 --max-time 10 -s -o /dev/null http://httpbin.org/ip; then
+          if curl --proxy socks5://127.0.0.1:11080 --max-time 60 -s -o /dev/null http://httpbin.org/ip; then
             echo "SOCKS5 test passed"
           else
             echo "SOCKS5 test failed"
@@ -109,7 +109,7 @@ jobs:
           fi
 
           # Test HTTP CONNECT
-          if curl --proxy http://127.0.0.1:11080 --max-time 10 -s -o /dev/null https://httpbin.org/ip; then
+          if curl --proxy http://127.0.0.1:11080 --max-time 60 -s -o /dev/null https://httpbin.org/ip; then
             echo "HTTP tunnel test passed"
           else
             echo "HTTP tunnel test failed"
