@@ -43,7 +43,7 @@ proxy_server [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-t THREAD
 
 ```bash
 ./proxy_server                                          # defaults
-./proxy_server -p 1080 -a 2 -u admin -P secret123      # SOCKS5 with auth
+./proxy_server -p 1080 -a 2 -u admin -P secret123       # SOCKS5 with auth
 ./proxy_server -t 8 -b 127.0.0.1                        # custom threads + loopback
 ```
 
