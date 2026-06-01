@@ -50,7 +50,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if(stop_) throw std::runtime_error("enqueue on stopped ThreadPool");
-            tasks_.emplace([task]{(*task);});
+            tasks_.emplace([task]{(*task)();});
         }
         cv_.notify_one();
         return future;
