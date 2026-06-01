@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
+#include <atomic>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -44,7 +46,7 @@ static void print_usage(const char *app){
     exit(0);
 }
 
-signed main(const int argc, const char *argv[]){
+signed main(const int argc, char *argv[]){
     // Defaults
     const char *bind_addr = "0.0.0.0";
     size_t threads = 0; // auto

@@ -23,3 +23,11 @@ add_executable(proxy_server
 
 target_include_directories(proxy_server PRIVATE src)
 target_link_libraries(proxy_server PRIVATE ${PLATFORM_LIBS})
+
+if(MSVC)
+    target_compile_options(proxy_server PRIVATE /permissive- /W4 /utf-8)
+    target_compile_definitions(proxy_server PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        _WINSOCK_DEPRECATED_NO_WARNINGS
+    )
+endif()
