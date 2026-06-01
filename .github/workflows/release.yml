@@ -1,0 +1,129 @@
+name: Build & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish as GitHub Release'
+        type: boolean
+        default: false
+      version:
+        description: 'Release version tag (e.g. v1.0.0), required when publishing'
+        type: string
+        default: ''
+      release_name:
+        description: 'Release title (defaults to version tag)'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Windows / MSVC ──────────────────────────────────────────────
+  build-windows:
+    name: Build (Windows / MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Validate release inputs
+        if: inputs.publish_release
+        shell: pwsh
+        run: |
+          if (-not '${{ inputs.version }}') {
+            Write-Error 'version is required when publish_release is true'
+            exit 1
+          }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $dist = "proxy_server-windows-x64"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item "build\Release\proxy_server.exe" $dist
+          Compress-Archive -Path "$dist\*" -DestinationPath "$dist.zip"
+          Write-Host "Packaged: $dist.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy_server-windows-x64
+          path: proxy_server-windows-x64.zip
+          retention-days: 30
+
+  # ── Linux / GCC ─────────────────────────────────────────────────
+  build-linux:
+    name: Build (Linux / GCC)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate release inputs
+        if: inputs.publish_release
+        run: |
+          if [ -z "${{ inputs.version }}" ]; then
+            echo "::error::version is required when publish_release is true"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Collect artifacts
+        run: |
+          dist="proxy_server-linux-x64"
+          mkdir -p "$dist"
+          cp build/proxy_server "$dist/"
+          tar -czf "$dist.tar.gz" -C . "$dist"
+          echo "Packaged: $dist.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy_server-linux-x64
+          path: proxy_server-linux-x64.tar.gz
+          retention-days: 30
+
+  # ── Publish GitHub Release ──────────────────────────────────────
+  publish:
+    name: Publish GitHub Release
+    needs: [build-windows, build-linux]
+    if: inputs.publish_release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: proxy_server-windows-x64
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: proxy_server-linux-x64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.release_name || inputs.version }}
+          files: |
+            proxy_server-windows-x64.zip
+            proxy_server-linux-x64.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

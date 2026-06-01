@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ── Windows / MSVC ──────────────────────────────────────────────
+  build-windows:
+    name: Build (Windows / MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Start proxy in background
+          $proxy = Start-Process -FilePath "build\Release\proxy_server.exe" `
+            -ArgumentList "-p 11080" `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput proxy_stdout.txt `
+            -RedirectStandardError proxy_stderr.txt
+
+          Start-Sleep -Seconds 2
+
+          if ($proxy.HasExited) {
+            Write-Error "Proxy exited prematurely (exit code: $($proxy.ExitCode))"
+            Write-Host "=== stdout ==="; Get-Content proxy_stdout.txt
+            Write-Host "=== stderr ==="; Get-Content proxy_stderr.txt
+            exit 1
+          }
+
+          Write-Host "Proxy started (PID: $($proxy.Id))"
+
+          try {
+            # Test SOCKS5 via curl
+            curl --proxy socks5://127.0.0.1:11080 --max-time 10 -s -o NUL http://httpbin.org/ip
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "curl SOCKS5 test failed (exit code: $LASTEXITCODE)"
+            } else {
+              Write-Host "SOCKS5 test passed"
+            }
+
+            # Test HTTP CONNECT via curl
+            curl --proxy http://127.0.0.1:11080 --max-time 10 -s -o NUL https://httpbin.org/ip
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "curl HTTP test failed (exit code: $LASTEXITCODE)"
+            } else {
+              Write-Host "HTTP tunnel test passed"
+            }
+          } finally {
+            Stop-Process -Id $proxy.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "=== proxy stdout ==="; Get-Content proxy_stdout.txt -ErrorAction SilentlyContinue
+            Write-Host "=== proxy stderr ==="; Get-Content proxy_stderr.txt -ErrorAction SilentlyContinue
+          }
+
+  # ── Linux / GCC ─────────────────────────────────────────────────
+  build-linux:
+    name: Build (Linux / GCC)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Smoke test
+        run: |
+          set -e
+
+          # Start proxy in background
+          ./build/proxy_server -p 11080 &
+          PROXY_PID=$!
+
+          sleep 2
+
+          if ! kill -0 $PROXY_PID 2>/dev/null; then
+            echo "Proxy failed to start"
+            exit 1
+          fi
+
+          echo "Proxy started (PID: $PROXY_PID)"
+
+          # Test SOCKS5
+          if curl --proxy socks5://127.0.0.1:11080 --max-time 10 -s -o /dev/null http://httpbin.org/ip; then
+            echo "SOCKS5 test passed"
+          else
+            echo "SOCKS5 test failed"
+            kill $PROXY_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          # Test HTTP CONNECT
+          if curl --proxy http://127.0.0.1:11080 --max-time 10 -s -o /dev/null https://httpbin.org/ip; then
+            echo "HTTP tunnel test passed"
+          else
+            echo "HTTP tunnel test failed"
+            kill $PROXY_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          kill $PROXY_PID 2>/dev/null || true
+          wait $PROXY_PID 2>/dev/null || true
