@@ -356,7 +356,11 @@ static int handle_http(socket_t client_fd, char first_byte){
     }
 
     if(is_connect){
-        // CONNECT tunnel
+        // CONNECT tunnel: consume remaining headers up to empty line
+        char hdr_line[4096];
+        while(http_read_line(client_fd, hdr_line, sizeof(hdr_line))){
+            if(hdr_line[0] == '\0') break;
+        }
         log_info("HTTP CONNECT -> %s:%u", host, port);
         socket_t remote = connect_remote(host, port);
         if(remote == INVALID_SOCK){
