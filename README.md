@@ -11,7 +11,9 @@ A high-performance, multi-protocol proxy server written in C++17. Supports SOCKS
 - **HTTP** — CONNECT tunneling (HTTPS) + basic HTTP forwarding for absolute-URL requests
 - **Dual-stack IPv4/IPv6** — single `AF_INET6` socket with `IPV6_V6ONLY=0`, auto fallback to IPv4
 - **Auto protocol detection** — identifies SOCKS4 / SOCKS5 / HTTP from the first byte of the handshake
-- **Thread pool** — bounded workers via `std::thread`, defaults to `hardware_concurrency`
+- **Thread-per-connection** — each connection gets a dedicated thread, no queuing
+- **Pre-handshake filter** — idle browser probes are killed in the main thread without spawning a worker
+- **Parallel DNS connect** — all resolved addresses tried simultaneously with a 2-second deadline
 - **Cross-platform** — Windows (Winsock2) and Linux (POSIX sockets)
 
 ## Quick Start
@@ -28,14 +30,13 @@ The server listens on `0.0.0.0:1080` (dual-stack, SOCKS5 NOAUTH) by default.
 ## Command Line
 
 ```
-proxy_server [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-t THREADS] [-b BIND_ADDR]
+proxy_server [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-b BIND_ADDR]
 
   -p PORT       Listen port (default: 1080)
   -a AUTHTYPE   SOCKS5 auth: 0 = NOAUTH, 2 = USERPASS (default: 0)
   -u USERNAME   Auth username (default: user)
   -P PASSWORD   Auth password (default: pass)
-  -t THREADS    Worker threads (default: CPU cores)
-  -b BIND_ADDR  Bind address (default: ::)
+  -b BIND_ADDR  Bind address (default: 0.0.0.0, dual-stack via ::)
   -h            Show help
 ```
 
@@ -44,12 +45,10 @@ proxy_server [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-t THREAD
 ```bash
 ./proxy_server                                          # defaults
 ./proxy_server -p 1080 -a 2 -u admin -P secret123       # SOCKS5 with auth
-./proxy_server -t 8 -b 127.0.0.1                        # custom threads + loopback
+./proxy_server -b 127.0.0.1                             # loopback only
 ```
 
 ## Client Configuration
-
-Just set up the proxy as you like. Here are some examples.
 
 ### curl
 
@@ -69,7 +68,7 @@ curl --proxy socks5h://127.0.0.1:1080 http://ipv6.google.com  # resolve on proxy
 ### Windows System Proxy
 
 `Settings → Network & Internet → Proxy → Manual`
-- Address: `127.0.0.1`, Port: `1080` (HTTP forwarding only)
+- Address: `127.0.0.1`, Port: `1080` (HTTP forwarding only; Please use a browser extension for SOCKS)
 
 ## Protocol Support
 
@@ -86,26 +85,30 @@ HTTPS works transparently — the proxy tunnels the TLS stream without inspectin
 
 ```
 main.cpp           Entry point, CLI, signal handling, accept loop
-io.hpp / io.cpp    Cross-platform socket I/O, logging, DNS
+io.hpp / io.cpp    Cross-platform socket I/O, logging, DNS, parallel connect
 session.cpp        Protocol detection + SOCKS4/4a/5/HTTP handlers
-thread_pool.hpp    Header-only bounded thread pool
+thread_pool.hpp    Header-only thread pool (kept as a utility, not used by main)
 ```
 
 ```
-Client ──TCP──> accept() ──enqueue──> ThreadPool worker
-                                           │
-                                     protocol detection (first byte)
-                                           │
-                              ┌────────────┼────────────┐
-                              │            │            │
-                           SOCKS4       SOCKS5        HTTP
-                              │            │            │
-                              └────────────┼────────────┘
-                                           │
-                                     connect remote
-                                           │
-                                     socket_pipe()
-                                   (bidirectional forwarding)
+Client ──TCP──> accept()
+                   │
+                   ├─ select(fd, 1s) ── timeout ──> close (browser probe)
+                   │
+                   └─ data ready ──> std::thread::detach()
+                                         │
+                                   protocol detection (first byte)
+                                         │
+                            ┌────────────┼────────────┐
+                            │            │            │
+                         SOCKS4       SOCKS5        HTTP
+                            │            │            │
+                            └────────────┼────────────┘
+                                         │
+                              parallel connect (2s deadline)
+                                         │
+                                   socket_pipe()
+                                 (bidirectional forwarding)
 ```
 
 ## Build Requirements

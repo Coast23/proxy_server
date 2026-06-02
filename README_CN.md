@@ -11,7 +11,9 @@
 - **HTTP** — CONNECT 隧道（用于 HTTPS）+ 基础 HTTP 转发（绝对 URL 请求）
 - **双栈 IPv4/IPv6** — 单 `AF_INET6` 套接字 + `IPV6_V6ONLY=0` 同时接受 IPv4 和 IPv6 连接，IPv6 栈不可用时自动回退到 IPv4
 - **自动协议检测** — 根据客户端握手首字节识别 SOCKS4 / SOCKS5 / HTTP
-- **线程池** — 基于 `std::thread` 的有界工作线程池，默认大小为 CPU 核心数
+- **每连接一线程** — 每个连接获得独立线程，零排队
+- **握手前过滤** — 浏览器空探针在主线程中 1 秒内关闭，不创建工作线程
+- **并行 DNS 连接** — 所有解析地址同时发起非阻塞连接，2 秒截止
 - **跨平台** — Windows (Winsock2) 与 Linux (POSIX sockets)，通过 `_WIN32` 条件编译
 
 ## 快速开始
@@ -28,14 +30,13 @@ cmake --build . -j
 ## 命令行参数
 
 ```
-proxy_server [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-t THREADS] [-b BIND_ADDR]
+proxy_server [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-b BIND_ADDR]
 
   -p PORT       监听端口（默认: 1080）
   -a AUTHTYPE   SOCKS5 认证方式: 0 = 无认证, 2 = 用户名密码（默认: 0）
   -u USERNAME   认证用户名（默认: user）
   -P PASSWORD   认证密码（默认: pass）
-  -t THREADS    工作线程数（默认: CPU 核心数）
-  -b BIND_ADDR  绑定地址（默认: ::）
+  -b BIND_ADDR  绑定地址（默认: 0.0.0.0，双栈通过 :: 实现）
   -h            显示帮助信息
 ```
 
@@ -44,12 +45,10 @@ proxy_server [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-t THREAD
 ```bash
 ./proxy_server                                         # 默认启动
 ./proxy_server -p 1080 -a 2 -u admin -P secret123      # 启用用户名密码认证
-./proxy_server -t 8 -b 127.0.0.1                       # 自定义线程数，仅监听本地
+./proxy_server -b 127.0.0.1                            # 仅监听本地
 ```
 
 ## 客户端配置
-
-正常设置代理即可，以下是一些使用示例。
 
 ### curl
 
@@ -93,26 +92,30 @@ HTTPS 无需额外实现 — 代理仅做 TCP 层隧道转发，TLS 握手在客
 
 ```
 main.cpp           入口、命令行解析、信号处理、accept 循环
-io.hpp / io.cpp    跨平台套接字 I/O、日志、DNS 解析
+io.hpp / io.cpp    跨平台套接字 I/O、日志、DNS 解析、并行连接
 session.cpp        协议检测 + SOCKS4/4a/5/HTTP 处理
-thread_pool.hpp    头文件有界线程池
+thread_pool.hpp    头文件线程池（保留为工具组件，main 不再使用）
 ```
 
 ```
-客户端 ──TCP──> accept() ──入队──> 线程池工作线程
-                                        │
-                                  协议检测（首字节）
-                                        │
-                           ┌────────────┼────────────┐
-                           │            │            │
-                        SOCKS4       SOCKS5        HTTP
-                           │            │            │
-                           └────────────┼────────────┘
-                                        │
-                                   连接目标服务器
-                                        │
-                                   socket_pipe()
-                                 （双向数据转发）
+客户端 ──TCP──> accept()
+                   │
+                   ├─ select(fd, 1s) ── 超时 ──> close（浏览器探针）
+                   │
+                   └─ 数据就绪 ──> std::thread::detach()
+                                       │
+                                 协议检测（首字节）
+                                       │
+                          ┌────────────┼────────────┐
+                          │            │            │
+                       SOCKS4       SOCKS5        HTTP
+                          │            │            │
+                          └────────────┼────────────┘
+                                       │
+                              并行连接（2s 截止）
+                                       │
+                                  socket_pipe()
+                                （双向数据转发）
 ```
 
 ## 构建依赖
