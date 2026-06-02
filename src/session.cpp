@@ -31,7 +31,10 @@ enum Socks5Rep : uint8_t {
 static void socks5_send_reply(socket_t fd, uint8_t rep, uint8_t atyp,
                                const void *addr, uint8_t addr_len, uint16_t port){
     uint8_t response[4] = {0x05, rep, 0x00, atyp};
-    writen(fd, response,4);
+    writen(fd, response, 4);
+    if(atyp == SOCKS5_DOMAIN){
+        writen(fd, &addr_len, 1);  // RFC 1928: 1-byte length prefix
+    }
     writen(fd, addr, addr_len);
     uint16_t netport = htons(port);
     writen(fd, &netport, 2);
