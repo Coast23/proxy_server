@@ -1,12 +1,12 @@
 #include "io.hpp"
 #include "session.hpp"
-#include "thread_pool.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
 #include <atomic>
+#include <thread>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -35,12 +35,11 @@ static void setup_signals(){
 }
 
 static void print_usage(const char *app){
-    printf("USAGE: %s [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-t THREADS] [-b BIND_ADDR]\n", app);
+    printf("USAGE: %s [-h] [-p PORT] [-a AUTHTYPE] [-u USERNAME] [-P PASSWORD] [-b BIND_ADDR]\n", app);
     printf("  -p PORT       Listen port (default: 1080)\n");
     printf("  -a AUTHTYPE   SOCKS5 auth: 0=NOAUTH, 2=USERPASS (default: 0)\n");
     printf("  -u USERNAME   Auth username (default: user)\n");
     printf("  -P PASSWORD   Auth password (default: pass)\n");
-    printf("  -t THREADS    Worker thread count (default: CPU cores)\n");
     printf("  -b BIND_ADDR  Bind address (default: 0.0.0.0)\n");
     printf("  -h            Show this help\n");
     exit(0);
@@ -49,7 +48,6 @@ static void print_usage(const char *app){
 signed main(const int argc, char *argv[]){
     // Defaults
     const char *bind_addr = "0.0.0.0";
-    size_t threads = 0; // auto
 
     // Parse args
     for(int i = 1; i < argc; ++i){
@@ -63,7 +61,7 @@ signed main(const int argc, char *argv[]){
         else if(strcmp(argv[i], "-P") == 0 and i + 1 < argc)
             g_config.password = argv[++i];
         else if(strcmp(argv[i], "-t") == 0 and i + 1 < argc)
-            threads = (size_t)atoi(argv[++i]);
+            ; // -t kept for compatibility, ignored — now uses thread-per-connection
         else if(strcmp(argv[i], "-b") == 0 and i + 1 < argc)
             bind_addr = argv[++i];
     }
@@ -92,10 +90,7 @@ signed main(const int argc, char *argv[]){
     }
 
     setup_signals();
-    if(!threads) threads = default_thread_count();
-    ThreadPool pool(threads);
-    log_info("Thread pool: %zu workers", pool.size());
-    log_info("Listening on %s:%u ...", bind_addr, g_config.port);
+    log_info("Thread-per-connection mode, listening on %s:%u ...", bind_addr, g_config.port);
 
     struct sockaddr_storage remote;
     socklen_t remotelen = sizeof(remote);
@@ -130,7 +125,19 @@ signed main(const int argc, char *argv[]){
         }
         log_info("Connection from %s:%u", client_ip, client_port);
 
-        pool.enqueue([client_fd](){handle_session(client_fd);});
+        // Wait up to 1s for client to actually send data. Browsers often open
+        // TCP connections as probes without ever sending a handshake — kill
+        // those in the main thread without spawning a worker.
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(client_fd, &rfds);
+        struct timeval tv = {1, 0};
+        if(select((int)(client_fd + 1), &rfds, nullptr, nullptr, &tv) <= 0){
+            io_close(client_fd);
+            continue;
+        }
+
+        std::thread([client_fd]{ handle_session(client_fd); }).detach();
     }
 
     log_info("Shutting down...");
