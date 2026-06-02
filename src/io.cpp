@@ -4,6 +4,39 @@
 #include <cstdio>
 #include <cstdarg>
 
+// Non-blocking connect with timeout. Returns 0 on success, -1 on failure/timeout.
+static int connect_timeout(socket_t fd, const struct sockaddr *addr, socklen_t addrlen, int timeout_sec = 3){
+    set_nonblocking(fd);
+    int ret = connect(fd, addr, addrlen);
+#ifdef _WIN32
+    if(ret == SOCK_ERR){
+        int e = WSAGetLastError();
+        if(e != WSAEWOULDBLOCK) return -1;
+#else
+    if(ret == -1){
+        if(errno != EINPROGRESS) return -1;
+#endif
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(fd, &wfds);
+        struct timeval tv = {timeout_sec, 0};
+        ret = select((int)(fd + 1), nullptr, &wfds, nullptr, &tv);
+        if(ret <= 0) return -1;
+        int err = 0;
+        socklen_t len = sizeof(err);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
+        if(err != 0) return -1;
+    }
+#ifdef _WIN32
+    u_long mode = 0;
+    ioctlsocket(fd, FIONBIO, &mode);
+#else
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+#endif
+    return 0;
+}
+
 static FILE *log_fp = stdout;
 static std::mutex log_lock;
 
@@ -143,6 +176,16 @@ int set_tcp_nodelay(socket_t fd){
     return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
 }
 
+int set_recv_timeout(socket_t fd, int seconds){
+#ifdef _WIN32
+    DWORD timeout = (DWORD)(seconds * 1000);
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
+#else
+    struct timeval tv = {seconds, 0};
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+#endif
+}
+
 socket_t create_server_socket(const char *bind_addr, uint16_t port, int backlog){
     socket_t sock = socket(AF_INET6, SOCK_STREAM, 0);
     if(sock == INVALID_SOCK) {
@@ -231,10 +274,10 @@ socket_t connect_remote_ipv4(const uint8_t ip[4], uint16_t port){
     remote.sin_addr.s_addr = inet_addr(addr_str);
     remote.sin_port = htons(port);
 
-    if(connect(fd, (struct sockaddr *)&remote, sizeof(remote)) < 0){
+    if(connect_timeout(fd, (struct sockaddr *)&remote, sizeof(remote)) < 0){
         log_error("connect() to %s:%u failed", addr_str, port);
         io_close(fd);
-        return INVALID_SOCK;    
+        return INVALID_SOCK;
     }
     return fd;
 }
@@ -255,7 +298,7 @@ socket_t connect_remote_ipv6(const uint8_t ip[16], uint16_t port){
     inet_ntop(AF_INET6, ip, addr_str, sizeof(addr_str));
     log_info("Connecting to [%s]:%u", addr_str, port);
 
-    if(connect(fd, (struct sockaddr *)&remote, sizeof(remote)) < 0){
+    if(connect_timeout(fd, (struct sockaddr *)&remote, sizeof(remote)) < 0){
         log_error("connect() to [%s]:%u failed", addr_str, port);
         io_close(fd);
         return INVALID_SOCK;
@@ -282,21 +325,70 @@ socket_t connect_remote(const char *host, uint16_t port){
         return INVALID_SOCK;
     }
 
-    socket_t fd = INVALID_SOCK;
-    for(struct addrinfo *r = res; r != nullptr; r = r->ai_next){
-        fd = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-        if(fd == INVALID_SOCK) continue;
+    // Initiate non-blocking connects to all addresses in parallel
+    socket_t fds[8];
+    int count = 0;
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    socket_t maxfd = 0;
 
-        set_tcp_nodelay(fd);
+    for(struct addrinfo *r = res; r != nullptr and count < 8; r = r->ai_next){
+        socket_t s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
+        if(s == INVALID_SOCK) continue;
 
-        if(connect(fd, r->ai_addr, r->ai_addrlen) == 0) break; // success
-        
-        io_close(fd);
-        fd = INVALID_SOCK;
+        set_nonblocking(s);
+        set_tcp_nodelay(s);
+
+        int cr = connect(s, r->ai_addr, (int)r->ai_addrlen);
+        if(cr == 0){
+            // Connected immediately — winner, skip the rest
+            freeaddrinfo(res);
+            for(int i = 0; i < count; ++i) io_close(fds[i]);
+#ifdef _WIN32
+            u_long mode = 0; ioctlsocket(s, FIONBIO, &mode);
+#else
+            int fl = fcntl(s, F_GETFL, 0); fcntl(s, F_SETFL, fl & ~O_NONBLOCK);
+#endif
+            return s;
+        }
+#ifdef _WIN32
+        if(WSAGetLastError() != WSAEWOULDBLOCK){ io_close(s); continue; }
+#else
+        if(errno != EINPROGRESS){ io_close(s); continue; }
+#endif
+
+        fds[count++] = s;
+        FD_SET(s, &wfds);
+        if(s > maxfd) maxfd = s;
+    }
+    freeaddrinfo(res);
+
+    if(count == 0) return INVALID_SOCK;
+
+    // Wait for ANY socket to complete (2 second total deadline)
+    struct timeval tv = {2, 0};
+    select((int)(maxfd + 1), nullptr, &wfds, nullptr, &tv);
+
+    // Pick the first successfully connected socket, close the rest
+    socket_t result = INVALID_SOCK;
+    for(int i = 0; i < count; ++i){
+        if(result == INVALID_SOCK){
+            int err = 0; socklen_t len = sizeof(err);
+            getsockopt(fds[i], SOL_SOCKET, SO_ERROR, (char *)&err, &len);
+            if(err == 0){
+                result = fds[i];
+#ifdef _WIN32
+                u_long mode = 0; ioctlsocket(result, FIONBIO, &mode);
+#else
+                int fl = fcntl(result, F_GETFL, 0); fcntl(result, F_SETFL, fl & ~O_NONBLOCK);
+#endif
+                continue;
+            }
+        }
+        io_close(fds[i]);
     }
 
-    freeaddrinfo(res);
-    if(fd == INVALID_SOCK)
+    if(result == INVALID_SOCK)
         log_error("connect_remote(%s:%u) all attempts failed", host, port);
-    return fd;
+    return result;
 }

@@ -55,6 +55,7 @@ int socket_pipe(socket_t fd0, socket_t fd1);
 // Socket helpers
 int set_nonblocking(socket_t fd);
 int set_tcp_nodelay(socket_t fd);
+int set_recv_timeout(socket_t fd, int seconds);
 socket_t create_server_socket(const char *bind_addr, uint16_t port, int backlog = 128);
 
 // DNS / connect to remote

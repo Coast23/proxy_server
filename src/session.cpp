@@ -456,11 +456,13 @@ void dispatch_protocol(socket_t client_fd, uint8_t first_byte){
 
 void handle_session(socket_t client_fd){
     set_tcp_nodelay(client_fd);
+    set_recv_timeout(client_fd, 2); // safety net, data already confirmed by select
 
     // Read first byte to determine protocol (consumes it)
     char first_char;
     ssize_t n = recv(client_fd, &first_char, 1, 0);
     if(n <= 0){
+        if(n == 0) log_info("Client disconnected before handshake");
         io_close(client_fd);
         return;
     }
