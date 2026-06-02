@@ -4,6 +4,16 @@
 #include <cstdio>
 #include <cstdarg>
 
+static void set_blocking(socket_t fd){
+#ifdef _WIN32
+    u_long mode = 0;
+    ioctlsocket(fd, FIONBIO, &mode);
+#else
+    int flags = fcntl(fd, F_GETFL, 0);
+    if(flags != -1) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+#endif
+}
+
 // Non-blocking connect with timeout. Returns 0 on success, -1 on failure/timeout.
 static int connect_timeout(socket_t fd, const struct sockaddr *addr, socklen_t addrlen, int timeout_sec = 3){
     set_nonblocking(fd);
@@ -27,13 +37,7 @@ static int connect_timeout(socket_t fd, const struct sockaddr *addr, socklen_t a
         getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
         if(err != 0) return -1;
     }
-#ifdef _WIN32
-    u_long mode = 0;
-    ioctlsocket(fd, FIONBIO, &mode);
-#else
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-#endif
+    set_blocking(fd);
     return 0;
 }
 
@@ -344,11 +348,7 @@ socket_t connect_remote(const char *host, uint16_t port){
             // Connected immediately — winner, skip the rest
             freeaddrinfo(res);
             for(int i = 0; i < count; ++i) io_close(fds[i]);
-#ifdef _WIN32
-            u_long mode = 0; ioctlsocket(s, FIONBIO, &mode);
-#else
-            int fl = fcntl(s, F_GETFL, 0); fcntl(s, F_SETFL, fl & ~O_NONBLOCK);
-#endif
+            set_blocking(s);
             return s;
         }
 #ifdef _WIN32
@@ -377,11 +377,7 @@ socket_t connect_remote(const char *host, uint16_t port){
             getsockopt(fds[i], SOL_SOCKET, SO_ERROR, (char *)&err, &len);
             if(err == 0){
                 result = fds[i];
-#ifdef _WIN32
-                u_long mode = 0; ioctlsocket(result, FIONBIO, &mode);
-#else
-                int fl = fcntl(result, F_GETFL, 0); fcntl(result, F_SETFL, fl & ~O_NONBLOCK);
-#endif
+                set_blocking(result);
                 continue;
             }
         }

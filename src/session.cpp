@@ -112,8 +112,20 @@ static int socks5_auth(socket_t fd, int nmethods){
     }
 }
 
+static int socks5_connect_and_pipe(socket_t client_fd, socket_t remote,
+                                     uint8_t atyp, const void *addr,
+                                     uint8_t addr_len, uint16_t port){
+    if(remote == INVALID_SOCK){
+        socks5_send_reply_fail(client_fd, SOCKS5_REP_CONN_REFUSED);
+        return -1;
+    }
+    socks5_send_reply(client_fd, SOCKS5_REP_OK, atyp, addr, addr_len, port);
+    socket_pipe(client_fd, remote);
+    io_close(remote);
+    return 0;
+}
+
 static int handle_socks5(socket_t client_fd){
-    // Read request header (4 bytes: VER CMD RSV ATYP)
     uint8_t req[4];
     if(readn(client_fd, req, 4) <= 0) return -1;
 
@@ -124,7 +136,6 @@ static int handle_socks5(socket_t client_fd){
     }
 
     if(req[3] == SOCKS5_IPV4){
-        // IPv4 address
         uint8_t ip[4];
         if(readn(client_fd, ip, 4) <= 0) return -1;
         uint16_t port_net;
@@ -134,20 +145,11 @@ static int handle_socks5(socket_t client_fd){
         log_info("SOCKS5 CONNECT -> %hhu.%hhu.%hhu.%hhu:%u",
                  ip[0], ip[1], ip[2], ip[3], port);
 
-        socket_t remote = connect_remote_ipv4(ip, port);
-        if(remote == INVALID_SOCK){
-            socks5_send_reply_fail(client_fd, SOCKS5_REP_CONN_REFUSED);
-            return -1;
-        }
-
-        socks5_send_reply(client_fd, SOCKS5_REP_OK, SOCKS5_IPV4, ip, 4, port);
-        socket_pipe(client_fd, remote);
-        io_close(remote);
-        return 0;
-
+        return socks5_connect_and_pipe(client_fd,
+                connect_remote_ipv4(ip, port),
+                SOCKS5_IPV4, ip, 4, port);
     }
-    else if(req[3] == SOCKS5_IPV6){
-        // IPv6 address
+    if(req[3] == SOCKS5_IPV6){
         uint8_t ip[16];
         if(readn(client_fd, ip, 16) <= 0) return -1;
         uint16_t port_net;
@@ -158,20 +160,11 @@ static int handle_socks5(socket_t client_fd){
         inet_ntop(AF_INET6, ip, ip_str, sizeof(ip_str));
         log_info("SOCKS5 CONNECT -> [%s]:%u", ip_str, port);
 
-        socket_t remote = connect_remote_ipv6(ip, port);
-        if(remote == INVALID_SOCK){
-            socks5_send_reply_fail(client_fd, SOCKS5_REP_CONN_REFUSED);
-            return -1;
-        }
-
-        socks5_send_reply(client_fd, SOCKS5_REP_OK, SOCKS5_IPV6, ip, 16, port);
-        socket_pipe(client_fd, remote);
-        io_close(remote);
-        return 0;
-
+        return socks5_connect_and_pipe(client_fd,
+                connect_remote_ipv6(ip, port),
+                SOCKS5_IPV6, ip, 16, port);
     }
-    else if(req[3] == SOCKS5_DOMAIN){
-        // Domain name
+    if(req[3] == SOCKS5_DOMAIN){
         uint8_t dlen;
         if(readn(client_fd, &dlen, 1) <= 0) return -1;
         char domain[256];
@@ -183,23 +176,14 @@ static int handle_socks5(socket_t client_fd){
 
         log_info("SOCKS5 CONNECT -> %s:%u", domain, port);
 
-        socket_t remote = connect_remote(domain, port);
-        if(remote == INVALID_SOCK){
-            socks5_send_reply_fail(client_fd, SOCKS5_REP_CONN_REFUSED);
-            return -1;
-        }
+        return socks5_connect_and_pipe(client_fd,
+                connect_remote(domain, port),
+                SOCKS5_DOMAIN, domain, dlen, port);
+    }
 
-        socks5_send_reply(client_fd, SOCKS5_REP_OK, SOCKS5_DOMAIN,
-                          domain, dlen, port);
-        socket_pipe(client_fd, remote);
-        io_close(remote);
-        return 0;
-    }
-    else{
-        log_info("SOCKS5 unsupported atyp: 0x%02x", req[3]);
-        socks5_send_reply_fail(client_fd, SOCKS5_REP_ATYP_UNSUPPORTED);
-        return -1;
-    }
+    log_info("SOCKS5 unsupported atyp: 0x%02x", req[3]);
+    socks5_send_reply_fail(client_fd, SOCKS5_REP_ATYP_UNSUPPORTED);
+    return -1;
 }
 
 static bool socks4_is_4a(const uint8_t ip[4]){
@@ -462,7 +446,6 @@ void handle_session(socket_t client_fd){
     char first_char;
     ssize_t n = recv(client_fd, &first_char, 1, 0);
     if(n <= 0){
-        if(n == 0) log_info("Client disconnected before handshake");
         io_close(client_fd);
         return;
     }

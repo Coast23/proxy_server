@@ -1,12 +1,12 @@
 #include "io.hpp"
 #include "session.hpp"
 
+#include <atomic>
 #include <cstdio>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
-#include <atomic>
-#include <thread>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -90,7 +90,7 @@ signed main(const int argc, char *argv[]){
     }
 
     setup_signals();
-    log_info("Thread-per-connection mode, listening on %s:%u ...", bind_addr, g_config.port);
+    log_info("Listening on %s:%u ...", bind_addr, g_config.port);
 
     struct sockaddr_storage remote;
     socklen_t remotelen = sizeof(remote);

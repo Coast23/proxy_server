@@ -11,7 +11,7 @@ struct ProxyConfig {
 
 extern ProxyConfig g_config;
 
-// Entry point for each accepted connection (called from thread pool)
+// Entry point for each accepted connection
 void handle_session(socket_t client_fd);
 
 // Auto-detect protocol and dispatch
